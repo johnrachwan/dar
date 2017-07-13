@@ -1,0 +1,433 @@
+%pyspark
+
+def plot(plot_dic, height=500, width=500, **kwargs):
+    kwargs['output_type'] = 'div'
+    plot_str = plotly.offline.plot(plot_dic, **kwargs)
+    print('%%angular <div style="height: %ipx; width: %spx"> %s </div>' % (height, width, plot_str))
+######################################DATA IMPORT PARAGRAPH#############################################################
+import numpy as np
+import pandas as pd
+pd.options.mode.chained_assignment = None
+
+import plotly.plotly as py
+import plotly.graph_objs as go
+from plotly import tools
+from plotly.offline import iplot
+
+terror_data = pd.read_csv('/tmp/terrorist/Terror.csv', encoding='ISO-8859-1',
+                          usecols=[0, 1, 2, 3, 7, 8, 9, 23, 40, 48, 51])
+terror_data = terror_data.rename(
+    columns={'attack_id':'id', 'iyear':'year', 'imonth':'month', 'iday':'day',
+             'targtype':'target','weaptype1_txt':'weapon', 'nkill':'fatalities', 'nwound':'injuries'})
+terror_data['fatalities'] = terror_data['fatalities'].fillna(0).astype(int)
+terror_data['injuries'] = terror_data['injuries'].fillna(0).astype(int)
+
+# terrorist attacks in North America only
+terror_na = terror_data[(terror_data.region == 'North America') &
+                         (terror_data.longitude < 0)]
+terror_na['day'][terror_na.day == 0] = 1
+terror_na['month'][terror_na.month == 0] = 1
+terror_na['date'] = pd.to_datetime(terror_na[['year', 'month', 'day']])
+terror_na = terror_na[['id', 'date', 'year', 'latitude', 'longitude',
+                         'target', 'weapon', 'fatalities', 'injuries']]
+terror_na = terror_na.sort_values(['fatalities', 'injuries'], ascending = False)
+terror_na = terror_na.drop_duplicates(['date', 'latitude', 'longitude', 'fatalities'])
+
+
+%pyspark
+terror_na['text'] = terror_na['date'].dt.strftime('%B %-d, %Y') + '<br>' +\
+                     terror_na['fatalities'].astype(str) + ' Killed, ' +\
+                     terror_na['injuries'].astype(str) + ' Injured'
+fatality = dict(
+           type = 'scattergeo',
+           locationmode = 'NA',
+           lon = terror_na[terror_na.fatalities > 0]['longitude'],
+           lat = terror_na[terror_na.fatalities > 0]['latitude'],
+           text = terror_na[terror_na.fatalities > 0]['text'],
+           mode = 'markers',
+           name = 'Fatalities',
+           hoverinfo = 'text+name',
+           marker = dict(
+               size = terror_na[terror_na.fatalities > 0]['fatalities'] ** 0.255 * 8,
+               opacity = 0.95,
+               color = 'rgb(178,34,34)')
+           )
+injury = dict(
+         type = 'scattergeo',
+         locationmode = 'NA',
+         lon = terror_na[terror_na.fatalities == 0]['longitude'],
+         lat = terror_na[terror_na.fatalities == 0]['latitude'],
+         text = terror_na[terror_na.fatalities == 0]['text'],
+         mode = 'markers',
+         name = 'Injuries',
+         hoverinfo = 'text+name',
+         marker = dict(
+             size = (terror_na[terror_na.fatalities == 0]['injuries'] + 1) ** 0.245 * 8,
+             opacity = 0.85,
+             color = 'rgb(255,140,0)')
+         )
+layout = dict(
+         title = 'Terrorist Attacks by Latitude/Longitude in North America (1970-2015)',
+         showlegend = True,
+         legend = dict(
+             x = 0.85, y = 0.4
+         ),
+         geo = dict(
+             scope = 'na',
+             projection = dict(type = 'na'),
+             showland = True,
+             landcolor = 'rgb(250, 250, 250)',
+             subunitwidth = 1,
+             subunitcolor = 'rgb(217, 217, 217)',
+             countrywidth = 1,
+             countrycolor = 'rgb(217, 217, 217)',
+             showlakes = True,
+             lakecolor = 'rgb(255, 255, 255)')
+         )
+data = [fatality, injury]
+figure = dict(data = data, 
+layout = layout)
+plot({
+    "data":data,
+    "layout":layout
+})
+
+
+
+
+
+
+
+%pyspark
+# terrorist attacks by year
+terror_peryear = np.asarray(terror_na.groupby('year').year.count())
+
+terror_years = np.arange(1970, 2016)
+# terrorist attacks in 1993 missing from database
+terror_years = np.delete(terror_years, [23])
+
+trace = [go.Scatter(
+         x = terror_years,
+         y = terror_peryear,
+         mode = 'lines',
+         line = dict(
+             color = 'rgb(240, 140, 45)',
+             width = 3)
+         )]
+
+layout = go.Layout(
+         title = 'Terrorist Attacks by Year in North America (1970-2015)',
+         xaxis = dict(
+             rangeslider = dict(thickness = 0.05),
+             showline = True,
+             showgrid = False
+         ),
+         yaxis = dict(
+             range = [0.1, 425],
+             showline = True,
+             showgrid = False)
+         )
+
+figure = dict(data = trace, layout = layout)
+plot({
+    "data":trace,
+    "layout":layout
+})
+
+
+
+%pyspark
+# terrorist attack weapons grouped in categories
+weapon_codes = []
+
+for attack in terror_na['weapon'].values:
+    if attack in ['Explosives/Bombs/Dynamite', 'Sabotage Equipment']:
+        weapon_codes.append(1)
+    elif attack == 'Incendiary':
+        weapon_codes.append(2)
+    elif attack in ['Firearms', 'Fake Weapons']:
+        weapon_codes.append(3)
+    elif attack == 'Melee':
+        weapon_codes.append(5)
+    elif attack == 'Biological':
+        weapon_codes.append(6)
+    elif attack in ['Chemical', 'Radiological']:
+        weapon_codes.append(7)
+    elif 'Vehicle' in attack:
+        weapon_codes.append(8)
+    else:
+        weapon_codes.append(4)
+
+terror_na['weapon'] = weapon_codes
+weapon_categories = ['Explosives', 'Flammables', 'Firearms', 'Miscellaneous',
+                     'Knives', 'Bacteria/Viruses', 'Chemicals', 'Vehicles']
+
+# terrorist attacks by weapon
+weapon_count = np.asarray(terror_na.groupby('weapon').weapon.count())
+weapon_percent = np.round(weapon_count / sum(weapon_count) * 100, 2)
+
+# terrorist attack fatalities by weapon
+weapon_fatality = np.asarray(terror_na.groupby('weapon')['fatalities'].sum())
+weapon_yaxis = np.asarray([1.93, 1.02, 2.28, 0.875, 0.945, 0.83, 0.835, 3.2])
+
+# terrorist attack injuries by weapon
+weapon_injury = np.asarray(terror_na.groupby('weapon')['injuries'].sum())
+weapon_xaxis = np.log10(weapon_injury)
+
+weapon_text = []
+for i in range(0, 8):
+    weapon_text.append(weapon_categories[i] + ' (' + weapon_percent[i].astype(str) 
+                       + '%)<br>' + weapon_fatality[i].astype(str) + ' Killed, '
+                       + weapon_injury[i].astype(str) + ' Injured')
+
+weapon_fatality[6] = 7
+    
+data = [go.Scatter(
+        x = weapon_injury,
+        y = weapon_fatality,
+        text = weapon_text,
+        mode = 'markers',
+        hoverinfo = 'text',
+        marker = dict(
+            size = (weapon_count + 50) / 10,
+            opacity = 0.9,
+            color = 'rgb(240, 140, 45)')
+        )]
+
+layout = go.Layout(
+         title = 'Terrorist Attacks by Weapon in United States (1970-2015)',
+         xaxis = dict(
+             title = 'Injuries',
+             type = 'log',
+             range = [0.45, 3.51],
+             tickmode = 'auto',
+             nticks = 4,
+             showline = True,
+             showgrid = False
+         ),
+         yaxis = dict(
+             title = 'Fatalities',
+             type = 'log',
+             range = [0.65, 3.33],
+             tickmode = 'auto',
+             nticks = 3,
+             showline = True,
+             showgrid = False)
+         )
+
+annotations = []
+for i in range(0, 8):
+    annotations.append(dict(x=weapon_xaxis[i], y=weapon_yaxis[i],
+                            xanchor='middle', yanchor='top',
+                            text=weapon_categories[i], showarrow=False))
+layout['annotations'] = annotations
+
+figure = dict(data = data, layout = layout)
+plot({
+    "data":data,
+    "layout":layout
+})
+
+
+
+
+%pyspark
+terror_data = pd.read_csv('/tmp/terrorist/Terror.csv', encoding='ISO-8859-1',
+                          usecols=[0, 1, 2, 3,5, 7, 8, 9, 23, 30, 40, 48, 51])
+terror_data = terror_data.rename(
+    columns={'attack_id':'id', 'iyear':'year', 'imonth':'month', 'iday':'day','country_txt':'country',
+             'targtype':'target','weaptype1_txt':'weapon', 'nkill':'fatalities', 'nwound':'injuries'})
+terror_data['fatalities'] = terror_data['fatalities'].fillna(0).astype(int)
+terror_data['injuries'] = terror_data['injuries'].fillna(0).astype(int)
+terror_data['text'] = terror_data['country'] + '<br>' + terror_data['gname'] + '<br>' + terror_data['year'].apply(str) +'<br>' + 'Killed:  ' + abs(terror_data['fatalities']).apply(str)
+
+limits = [(0,500),(500,1000),(1000,1500),(1500,2000)]
+colors = ["rgb(252,187,161)","rgb(251,106,74)","rgb(203,24,29)","rgb(103,0,13)","lightgrey"]
+events = []
+
+for i in range(len(limits)):
+    lim = limits[i]
+    terror_data_sub = terror_data[(terror_data.fatalities >= lim[0]) & (terror_data.fatalities < lim[1])]  
+    event = dict(type = 'scattergeo',
+        lon = terror_data_sub['longitude'],
+        lat = terror_data_sub['latitude'],
+        text = terror_data_sub['text'] ,
+        marker = dict(
+            size = terror_data_sub['fatalities'],
+            color = colors[i],
+            line = dict(width=0.5),
+            sizemode = 'area'
+        ),
+        name = '{0} - {1}'.format(lim[0],lim[1]) )
+    events.append(event)
+    
+layout = dict(
+        title = 'World Terrorism Dataset',
+        showlegend = True,
+        geo = dict(resolution=100,
+            projection= dict(type = 'Mercator'),
+            showland = True,
+            showcoastlines = False, 
+            landcolor = 'rgb(217, 217, 217)',
+            subunitwidth=1,
+            countrywidth=1,
+            subunitcolor="rgb(255, 255, 255)",
+            countrycolor="rgb(255, 255, 255)"
+        ),
+    )
+
+fig = dict( data=events, layout=layout )
+plot({
+    "data":events,
+    "layout":layout
+})
+
+
+
+
+
+
+
+
+
+
+
+
+%pyspark
+terror_data = terror_data[np.isfinite(terror_data['fatalities'])]
+terror_data = terror_data[terror_data.fatalities > 10]
+limits = [(0,200),(200,400),(400,1000),(1000,2000)]
+colors = ["rgb(252,187,161)","rgb(251,106,74)","rgb(203,24,29)","rgb(103,0,13)","lightgrey"]
+events = []
+years  = [ i for i in range(1970,2015,1)]
+
+#make figure
+figure = {
+    'data': [],
+    'layout': {},
+    'frames': []
+    #'config': {'scrollzoom': True}
+}
+figure['layout']['title'] ='World Terrorism Dataset'
+figure['layout']['showlegend'] = False
+figure['layout']['geo'] = dict(resolution=50,
+            projection= dict(type = 'Mercator'),
+            showland = True,
+            showcoastlines = False,
+            landcolor = 'rgb(217, 217, 217)',
+            subunitwidth=1,
+            countrywidth=1,
+            subunitcolor="rgb(255, 255, 255)",
+            countrycolor="rgb(255, 255, 255)"
+        )
+figure['layout']['sliders'] = {
+    'args': [
+        'sliders.value', {
+            'duration': 400,
+            'ease': 'cubic-in-out'
+        }
+    ],
+    'initialValue': '1952',
+    'plotlycommand': 'animate',
+    'values': years,
+    'visible': True
+}
+figure['layout']['updatemenus'] = [
+    {
+        'buttons': [
+            {
+                'args': [None, {'frame': {'duration': 500, 'redraw': False},
+                         'fromcurrent': True, 'transition': {'duration': 300, 'easing': 'quadratic-in-out'}}],
+                'label': 'Play',
+                'method': 'animate'
+            },
+            {
+                'args': [[None], {'frame': {'duration': 0, 'redraw': False}, 'mode': 'immediate',
+                'transition': {'duration': 0}}],
+                'label': 'Pause',
+                'method': 'animate'
+            }
+        ],
+        'direction': 'left',
+        'pad': {'r': 10, 't': 87},
+        'showactive': False,
+        'type': 'buttons',
+        'x': 0.1,
+        'xanchor': 'right',
+        'y': 0,
+        'yanchor': 'top'
+    }
+]
+
+sliders_dict = {
+    'active': 0,
+    'yanchor': 'top',
+    'xanchor': 'left',
+    'currentvalue': {
+        'font': {'size': 20},
+        'prefix': 'Year:',
+        'visible': True,
+        'xanchor': 'right'
+    },
+    'transition': {'duration': 500, 'easing': 'cubic-in-out'},
+    'pad': {'b': 10, 't': 50},
+    'len': 0.9,
+    'x': 0.1,
+    'y': 0,
+    'steps': []
+}
+
+#Make data
+year = 1970
+for i in range(len(limits)):
+    lim = limits[i]
+    terror_data_sub = terror_data[(terror_data.fatalities >= lim[0]) & (terror_data.fatalities < lim[1])]
+    #for year in years:
+    terror_data_sub_byyear = terror_data_sub[terror_data_sub.year == year]  
+    data_dict = dict(
+        type = 'scattergeo',
+        lon = terror_data_sub_byyear['longitude'],
+        lat = terror_data_sub_byyear['latitude'],
+        text = terror_data_sub_byyear['text'] ,
+        marker = dict(
+        size = terror_data_sub_byyear['fatalities'],
+        color = colors[i],
+        line = dict(width=0.5),
+        sizemode = 'area'),
+        name = '{0} - {1}'.format(lim[0],lim[1]) )
+    figure['data'].append(data_dict)
+
+#Make Frames
+for year in years:
+        frame = {'data': [], 'name': str(year)}
+        for i in range(len(limits)):
+            lim = limits[i]
+            terror_data_sub = terror_data[(terror_data.fatalities >= lim[0]) & (terror_data.fatalities < lim[1])]
+            terror_data_sub_byyear = terror_data_sub[terror_data_sub.year == year]
+            data_dict = dict(
+                type = 'scattergeo',
+                lon = terror_data_sub_byyear['longitude'],
+                lat = terror_data_sub_byyear['latitude'],
+                text = terror_data_sub_byyear['text'] ,
+                marker = dict(
+                size = terror_data_sub_byyear['fatalities'],
+                color = colors[i],
+                line = dict(width=0.5),
+                sizemode = 'area'),
+                name = '{0} - {1}'.format(lim[0],lim[1]) )
+            frame['data'].append(data_dict)
+        figure['frames'].append(frame)
+        slider_step = {'args': [
+            [year],
+            {'frame': {'duration': 500, 'redraw': False},
+             'mode': 'immediate',
+             'transition': {'duration': 500}}
+             ],
+             'label': year,
+             'method': 'animate'}
+        sliders_dict['steps'].append(slider_step)
+
+figure['layout']['sliders'] = [sliders_dict]
+iplot(figure,validate=False)
+
+
